@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ANPR Smart Gate (Test)</title>
+<style>
+  :root{--bg:#0f1419;--card:#1a212b;--line:#2a3441;--txt:#e8edf3;--mut:#8b98a8;--ok:#22c55e;--warn:#f59e0b;--bad:#ef4444;--acc:#3b82f6}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font:15px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:12px;padding-bottom:40px}
+  h1{font-size:18px;margin:0 0 2px} .sub{color:var(--mut);font-size:12px;margin-bottom:10px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px}
+  .cam{position:relative;background:#000;border-radius:10px;overflow:hidden;aspect-ratio:4/3}
+  video{width:100%;height:100%;object-fit:cover;display:block}
+  .guide{position:absolute;left:10%;right:10%;top:38%;height:24%;border:2px dashed #fff9;border-radius:8px;box-shadow:0 0 0 999px #0005;pointer-events:none}
+  .hint{position:absolute;bottom:6px;left:0;right:0;text-align:center;font-size:12px;color:#fffc;text-shadow:0 1px 2px #000}
+  button,.btn{background:var(--acc);color:#fff;border:0;border-radius:10px;padding:11px 14px;font-size:15px;font-weight:600;cursor:pointer}
+  button.sec,.btn.sec{background:#2a3441} button.ok{background:var(--ok)} button.bad{background:var(--bad)} button.warn{background:var(--warn);color:#111}
+  button:disabled{opacity:.5}
+  .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px} .row>*{flex:1;min-width:110px;text-align:center}
+  input,select{width:100%;background:#0f1419;color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:10px;font-size:15px;margin-top:6px}
+  .plate{font:700 26px ui-monospace,Menlo,monospace;letter-spacing:2px;text-align:center;background:#fff;color:#111;border-radius:8px;padding:6px;margin:6px 0}
+  .banner{border-radius:10px;padding:14px;text-align:center;font-weight:700;font-size:17px;margin-top:8px}
+  .b-ok{background:#14532d;color:#bbf7d0}.b-warn{background:#78350f;color:#fde68a}.b-bad{background:#7f1d1d;color:#fecaca}.b-idle{background:#1f2937;color:var(--mut);font-weight:500}
+  .mut{color:var(--mut);font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} td,th{padding:6px 4px;border-bottom:1px solid var(--line);text-align:left}
+  .tag{font-size:11px;padding:2px 6px;border-radius:6px;background:#2a3441}
+  .barrier{font-size:20px;text-align:center;padding:14px;border-radius:10px;margin-top:8px;font-weight:800}
+  .barrier.open{background:var(--ok);color:#052e16}.barrier.closed{background:#2a3441;color:var(--mut)}
+  details summary{cursor:pointer;font-weight:600;padding:2px 0}
+  canvas#dbg{width:100%;border-radius:6px;margin-top:6px;background:#000}
+</style>
+</head>
+<body>
+<h1>🚧 ANPR Smart Gate <span class="tag">TEST</span></h1>
+<div class="sub">Browser-only prototype: Tesseract OCR + dummy records. Barrier = on-screen message.</div>
+
+<div class="card">
+  <div class="cam">
+    <video id="video" playsinline muted autoplay></video>
+    <div class="guide"></div>
+    <div class="hint">Fit the number plate inside the box</div>
+  </div>
+  <div class="row">
+    <button id="btnCam">▶ Start camera</button>
+    <label class="btn sec">📷 Take photo<input id="photo" type="file" accept="image/*" capture="environment" hidden></label>
+  </div>
+  <div id="status" class="mut" style="margin-top:8px">Loading OCR engine…</div>
+  <details><summary class="mut">Debug: what OCR sees</summary><canvas id="dbg"></canvas><div id="raw" class="mut"></div></details>
+</div>
+
+<div class="card">
+  <div class="mut">Detected plate</div>
+  <div id="plate" class="plate">— — —</div>
+  <div id="banner" class="banner b-idle">Waiting for a vehicle…</div>
+  <div id="info" class="mut" style="margin-top:6px;text-align:center"></div>
+  <div id="actions" class="row"></div>
+  <div id="verify" style="display:none">
+    <input id="vOwner" placeholder="Owner / visitor name">
+    <input id="vMeet" placeholder="Whom to meet / department">
+    <input id="vPurpose" placeholder="Purpose">
+    <select id="vType"><option value="once">One-time entry</option><option value="temp">Temporary (24h)</option><option value="perm">Add permanently</option></select>
+    <div class="row"><button class="ok" id="vAllow">Allow &amp; save</button><button class="sec" id="vCancel">Cancel</button></div>
+  </div>
+  <div id="barrier" class="barrier closed">🔒 BARRIER CLOSED</div>
+</div>
+
+<div class="card">
+  <b>Manual test</b> <span class="mut">(skip the camera)</span>
+  <input id="manual" placeholder="Type a plate e.g. ABC-123" autocapitalize="characters">
+  <div class="row"><button id="btnManual" class="sec">Run match</button></div>
+</div>
+
+<div class="card">
+  <b>Authorized vehicles</b> <span id="count" class="mut"></span>
+  <table id="tbl"></table>
+  <details style="margin-top:8px"><summary>Add / import</summary>
+    <input id="aPlate" placeholder="Plate" autocapitalize="characters">
+    <input id="aOwner" placeholder="Owner name">
+    <input id="aDesig" placeholder="Designation (optional)">
+    <div class="row"><button id="aAdd">Add</button></div>
+    <div class="mut" style="margin-top:8px">CSV format: plate,owner,designation</div>
+    <input id="csv" type="file" accept=".csv,text/csv">
+    <div class="row"><button class="sec" id="btnExport">Export CSV</button><button class="bad" id="btnReset">Reset dummy data</button></div>
+  </details>
+</div>
+
+<div class="card">
+  <b>Event log</b>
+  <table id="log"></table>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script>
+(() => {
+  // ---------- Config ----------
+  const SCAN_MS = 900;          // OCR interval
+  const VOTE_WINDOW = 8;        // last N reads considered
+  const VOTE_MIN = 3;           // same plate seen this many times => decide
+  const COOLDOWN_MS = 10000;    // ignore same plate after a decision
+  const MIN_LEN = 5, MAX_LEN = 9;
+
+  const DUMMY = [
+    {plate:"ABC-123", owner:"Dr. Ahmed Khan",   desig:"Professor", status:"active"},
+    {plate:"AKL-456", owner:"Sara Ali",         desig:"Lecturer",  status:"active"},
+    {plate:"BTR-7890",owner:"Imran Shah",       desig:"Registrar", status:"active"},
+    {plate:"KHI-2024",owner:"Univ. Transport",  desig:"Bus",       status:"active"},
+    {plate:"LEA-999", owner:"Blocked Vendor",   desig:"Vendor",    status:"blocked"},
+  ];
+
+  // ---------- Storage ----------
+  const $ = id => document.getElementById(id);
+  const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d } catch { return d } };
+  const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)) } catch {} };
+  let vehicles = load("anpr_vehicles", DUMMY);
+  let events = load("anpr_events", []);
+  let temps = load("anpr_temps", []); // {plate, owner, expires}
+
+  // ---------- Plate helpers ----------
+  const norm = s => (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const fold = s => norm(s).replace(/[OQD]/g,"0").replace(/[IL]/g,"1").replace(/B/g,"8").replace(/S/g,"5").replace(/Z/g,"2");
+  function lev(a, b){
+    const m=a.length,n=b.length; if(!m) return n; if(!n) return m;
+    let prev=Array.from({length:n+1},(_,i)=>i);
+    for(let i=1;i<=m;i++){const cur=[i];for(let j=1;j<=n;j++){cur[j]=Math.min(prev[j]+1,cur[j-1]+1,prev[j-1]+(a[i-1]===b[j-1]?0:1))}prev=cur}
+    return prev[n];
+  }
+  function match(plateRaw){
+    const p = norm(plateRaw);
+    const now = Date.now();
+    const t = temps.find(t => norm(t.plate) === p && t.expires > now);
+    if (t) return {type:"exact", v:{plate:t.plate, owner:t.owner, desig:"Temp pass", status:"active"}};
+    const exact = vehicles.find(v => norm(v.plate) === p);
+    if (exact) return {type:"exact", v:exact};
+    const f = fold(p);
+    const near = vehicles.filter(v => fold(v.plate) === f || lev(norm(v.plate), p) <= 1);
+    if (near.length === 1) return {type:"fuzzy", v:near[0]};
+    if (near.length > 1) return {type:"fuzzy", v:near[0], ambiguous:true};
+    return {type:"none"};
+  }
+
+  // ---------- Barrier (console for now) ----------
+  const barrierEl = $("barrier"); let barrierTimer;
+  const Barrier = {
+    open(label){
+      barrierEl.className = "barrier open"; barrierEl.textContent = "✅ GATE OPEN: " + label;
+      clearTimeout(barrierTimer);
+      barrierTimer = setTimeout(Barrier.close, 6000);
+      console.log("[BARRIER] OPEN", label);
+      if (navigator.vibrate) navigator.vibrate(200);
+    },
+    close(){ barrierEl.className = "barrier closed"; barrierEl.textContent = "🔒 BARRIER CLOSED"; }
+  };
+
+  // ---------- Decision UI ----------
+  const banner = $("banner"), info = $("info"), actions = $("actions"), verify = $("verify"), plateEl = $("plate");
+  let current = null;
+  const cooldown = new Map();
+
+  function setBanner(cls, text){ banner.className = "banner " + cls; banner.textContent = text; }
+  function clearActions(){ actions.innerHTML = ""; verify.style.display = "none"; }
+  function btn(label, cls, fn){ const b=document.createElement("button"); b.textContent=label; b.className=cls; b.onclick=fn; actions.appendChild(b); }
+
+  function decide(plateRaw, conf){
+    const p = norm(plateRaw);
+    plateEl.textContent = plateRaw;
+    const m = match(p);
+    current = {plate: plateRaw, m, conf};
+    clearActions();
+    cooldown.set(p, Date.now());
+
+    if (m.type === "exact" && m.v.status === "blocked"){
+      setBanner("b-bad", "⛔ BLOCKED VEHICLE");
+      info.textContent = `${m.v.owner} · ${m.v.desig||""}`;
+      btn("Reject", "bad", () => finish("reject_blocked"));
+      btn("Override: Allow", "warn", () => finish("guard_override"));
+    } else if (m.type === "exact"){
+      setBanner("b-ok", "✅ AUTHORIZED");
+      info.textContent = `${m.v.owner} · ${m.v.desig||""}`;
+      Barrier.open(`${m.v.plate} (${m.v.owner})`);
+      log(plateRaw, "auto_open", m.v.owner, conf);
+    } else if (m.type === "fuzzy"){
+      setBanner("b-warn", "⚠️ CLOSE MATCH — GUARD CONFIRM");
+      info.textContent = `Did you mean ${m.v.plate} (${m.v.owner})?` + (m.ambiguous ? " · multiple similar plates" : "");
+      btn("Yes, same vehicle", "ok", () => finish("guard_confirm"));
+      btn("No → Verify", "warn", () => startVerify());
+      btn("Reject", "bad", () => finish("reject"));
+    } else {
+      setBanner("b-bad", "❓ UNKNOWN VEHICLE");
+      info.textContent = "Not in the authorized list. Ask: who are you, whom to meet?";
+      btn("Ask & Verify", "warn", () => startVerify());
+      btn("Reject", "bad", () => finish("reject"));
+    }
+  }
+
+  function finish(decision){
+    const {plate, m, conf} = current;
+    if (decision === "guard_confirm" || decision === "guard_override"){
+      const who = m.v ? m.v.owner : "guest";
+      Barrier.open(`${plate} (${who})`);
+      setBanner("b-ok", decision === "guard_confirm" ? "✅ CONFIRMED BY GUARD" : "✅ OVERRIDDEN BY GUARD");
+    } else {
+      setBanner("b-bad", "🚫 ENTRY REJECTED");
+    }
+    log(plate, decision, m.v ? m.v.owner : "", conf);
+    clearActions();
+  }
+
+  function startVerify(){
+    verify.style.display = "block"; actions.innerHTML = "";
+    $("vOwner").value = ""; $("vMeet").value = ""; $("vPurpose").value = "";
+    $("vOwner").focus();
+  }
+  $("vCancel").onclick = () => { clearActions(); setBanner("b-idle", "Cancelled"); };
+  $("vAllow").onclick = () => {
+    const owner = $("vOwner").value.trim();
+    if (!owner){ alert("Enter the visitor name"); return; }
+    const type = $("vType").value, plate = current.plate;
+    const note = `${owner} → ${$("vMeet").value.trim()} (${$("vPurpose").value.trim()})`;
+    if (type === "perm"){
+      vehicles.push({plate: plate.toUpperCase(), owner, desig: $("vMeet").value.trim() || "Added by guard", status:"active"});
+      save("anpr_vehicles", vehicles); renderVehicles();
+    } else if (type === "temp"){
+      temps.push({plate, owner, expires: Date.now() + 24*3600*1000}); save("anpr_temps", temps);
+    }
+    Barrier.open(`${plate} (${owner})`);
+    setBanner("b-ok", "✅ ALLOWED AFTER VERIFICATION");
+    log(plate, "verified_" + type, note, current.conf);
+    clearActions();
+  };
+
+  // ---------- Log ----------
+  function log(plate, decision, who, conf){
+    events.unshift({t: Date.now(), plate, decision, who, conf: Math.round(conf||0)});
+    events = events.slice(0, 100); save("anpr_events", events); renderLog();
+  }
+  function renderLog(){
+    $("log").innerHTML = "<tr><th>Time</th><th>Plate</th><th>Decision</th></tr>" +
+      events.slice(0, 20).map(e => `<tr><td>${new Date(e.t).toLocaleTimeString()}</td><td>${esc(e.plate)}</td><td>${esc(e.decision)}<br><span class="mut">${esc(e.who||"")}</span></td></tr>`).join("");
+  }
+  const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+  // ---------- Vehicles UI ----------
+  function renderVehicles(){
+    $("count").textContent = `(${vehicles.length})`;
+    $("tbl").innerHTML = "<tr><th>Plate</th><th>Owner</th><th></th></tr>" + vehicles.map((v,i) =>
+      `<tr><td><b>${esc(v.plate)}</b>${v.status==="blocked"?' <span class="tag" style="background:#7f1d1d">blocked</span>':""}</td><td>${esc(v.owner)}<br><span class="mut">${esc(v.desig||"")}</span></td><td><button class="sec" data-i="${i}" style="padding:6px 10px">✕</button></td></tr>`).join("");
+    $("tbl").querySelectorAll("button").forEach(b => b.onclick = () => { vehicles.splice(+b.dataset.i,1); save("anpr_vehicles", vehicles); renderVehicles(); });
+  }
+  $("aAdd").onclick = () => {
+    const plate = $("aPlate").value.trim().toUpperCase(), owner = $("aOwner").value.trim();
+    if (!plate || !owner) return alert("Plate and owner are required");
+    vehicles.push({plate, owner, desig: $("aDesig").value.trim(), status:"active"});
+    save("anpr_vehicles", vehicles); renderVehicles();
+    $("aPlate").value = $("aOwner").value = $("aDesig").value = "";
+  };
+  $("csv").onchange = async e => {
+    const f = e.target.files[0]; if (!f) return;
+    const rows = (await f.text()).split(/\r?\n/).map(r => r.split(",").map(x => x.trim())).filter(r => r[0]);
+    let added = 0;
+    rows.forEach((r, i) => {
+      if (i === 0 && /plate|vehicle|number/i.test(r[0])) return;
+      if (!r[0] || vehicles.some(v => norm(v.plate) === norm(r[0]))) return;
+      vehicles.push({plate: r[0].toUpperCase(), owner: r[1] || "", desig: r[2] || "", status:"active"}); added++;
+    });
+    save("anpr_vehicles", vehicles); renderVehicles(); alert(`Imported ${added} vehicles`);
+  };
+  $("btnExport").onclick = () => {
+    const csv = "plate,owner,designation\n" + vehicles.map(v => [v.plate, v.owner, v.desig||""].join(",")).join("\n");
+    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], {type:"text/csv"})); a.download = "vehicles.csv"; a.click();
+  };
+  $("btnReset").onclick = () => { if (confirm("Reset to dummy data?")){ vehicles = JSON.parse(JSON.stringify(DUMMY)); temps = []; events = []; save("anpr_vehicles", vehicles); save("anpr_temps", temps); save("anpr_events", events); renderVehicles(); renderLog(); } };
+
+  // ---------- Manual ----------
+  $("btnManual").onclick = () => { const v = $("manual").value.trim(); if (v) decide(v.toUpperCase(), 100); };
+
+  // ---------- OCR ----------
+  let worker = null, ready = false, busy = false, stream = null, timer = null;
+  const reads = []; // {p, c, t}
+  const status = $("status");
+
+  async function initOCR(){
+    try{
+      worker = await Tesseract.createWorker("eng");
+      await worker.setParameters({
+        tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-",
+        tessedit_pageseg_mode: "7"
+      });
+      ready = true; status.textContent = "OCR ready. Start the camera or take a photo.";
+    } catch(e){ status.textContent = "OCR failed to load (internet needed on first load): " + e.message; }
+  }
+
+  function preprocess(srcCanvas){
+    const c = $("dbg"), W = Math.min(800, srcCanvas.width * 2), H = Math.round(W * srcCanvas.height / srcCanvas.width);
+    c.width = W; c.height = H;
+    const ctx = c.getContext("2d", {willReadFrequently:true});
+    ctx.drawImage(srcCanvas, 0, 0, W, H);
+    const img = ctx.getImageData(0, 0, W, H), d = img.data;
+    let min = 255, max = 0;
+    for (let i = 0; i < d.length; i += 4){ const g = .299*d[i] + .587*d[i+1] + .114*d[i+2]; d[i] = g; if (g<min) min=g; if (g>max) max=g; }
+    const range = Math.max(1, max - min);
+    for (let i = 0; i < d.length; i += 4){ const g = (d[i]-min) * 255 / range; d[i]=d[i+1]=d[i+2]=g; d[i+3]=255; }
+    ctx.putImageData(img, 0, 0);
+    return c;
+  }
+
+  async function ocr(canvas){
+    const c = preprocess(canvas);
+    const { data } = await worker.recognize(c);
+    const raw = (data.text || "").trim();
+    $("raw").textContent = `raw: "${raw}" · conf ${Math.round(data.confidence)}`;
+    return { text: norm(raw), conf: data.confidence };
+  }
+
+  function frameCrop(){
+    const v = $("video"), vw = v.videoWidth, vh = v.videoHeight; if (!vw) return null;
+    // guide box: left/right 10%, top 38%, height 24% of the displayed (cover-cropped) area; approximate on source
+    const dispAspect = v.clientWidth / v.clientHeight, srcAspect = vw / vh;
+    let sx = 0, sy = 0, sw = vw, sh = vh;
+    if (srcAspect > dispAspect){ sw = vh * dispAspect; sx = (vw - sw) / 2; } else { sh = vw / dispAspect; sy = (vh - sh) / 2; }
+    const c = document.createElement("canvas");
+    const cx = sx + sw * .10, cw = sw * .80, cy = sy + sh * .38, ch = sh * .24;
+    c.width = cw; c.height = ch;
+    c.getContext("2d").drawImage(v, cx, cy, cw, ch, 0, 0, cw, ch);
+    return c;
+  }
+
+  function validPlate(t){ return t.length >= MIN_LEN && t.length <= MAX_LEN && /[A-Z]/.test(t) && /[0-9]/.test(t); }
+
+  async function tick(){
+    if (!ready || busy || !stream) return;
+    busy = true;
+    try{
+      const c = frameCrop(); if (!c) return;
+      const r = await ocr(c);
+      const now = Date.now();
+      if (validPlate(r.text)){
+        reads.push({p: r.text, c: r.conf, t: now});
+        while (reads.length > VOTE_WINDOW) reads.shift();
+        const tally = {};
+        reads.forEach(x => tally[x.p] = (tally[x.p]||0) + 1);
+        const [best, n] = Object.entries(tally).sort((a,b) => b[1]-a[1])[0];
+        status.textContent = `Reading: ${best} (${n}/${VOTE_MIN})`;
+        const last = cooldown.get(best);
+        if (n >= VOTE_MIN && (!last || now - last > COOLDOWN_MS)){
+          const confs = reads.filter(x => x.p === best).map(x => x.c);
+          decide(best, confs.reduce((a,b)=>a+b,0)/confs.length);
+          reads.length = 0;
+        }
+      } else { status.textContent = "Scanning… (no plate in box)"; }
+    } catch(e){ console.error(e); }
+    finally{ busy = false; }
+  }
+
+  $("btnCam").onclick = async () => {
+    if (stream){ stream.getTracks().forEach(t => t.stop()); stream = null; clearInterval(timer); $("video").srcObject = null; $("btnCam").textContent = "▶ Start camera"; status.textContent = "Camera stopped."; return; }
+    if (!navigator.mediaDevices?.getUserMedia){
+      status.textContent = "Camera needs HTTPS (or localhost). Host this file on HTTPS, or use 'Take photo'."; return;
+    }
+    try{
+      stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}, width:{ideal:1280}, height:{ideal:720}}, audio:false});
+      $("video").srcObject = stream; $("btnCam").textContent = "■ Stop camera";
+      status.textContent = ready ? "Scanning…" : "Camera on, loading OCR…";
+      timer = setInterval(tick, SCAN_MS);
+    } catch(e){ status.textContent = "Camera error: " + e.message + " (needs HTTPS + permission)"; }
+  };
+
+  $("photo").onchange = async e => {
+    const f = e.target.files[0]; if (!f) return;
+    if (!ready){ status.textContent = "OCR still loading…"; return; }
+    status.textContent = "Reading photo…";
+    const bmp = await createImageBitmap(f);
+    // try full image, then center strip
+    const full = document.createElement("canvas"); const sc = Math.min(1, 1400 / bmp.width);
+    full.width = bmp.width*sc; full.height = bmp.height*sc; full.getContext("2d").drawImage(bmp, 0, 0, full.width, full.height);
+    const strip = document.createElement("canvas"); strip.width = full.width; strip.height = full.height*.4;
+    strip.getContext("2d").drawImage(full, 0, full.height*.3, full.width, full.height*.4, 0, 0, strip.width, strip.height);
+    let best = {text:"", conf:0};
+    for (const c of [strip, full]){ const r = await ocr(c); if (validPlate(r.text) && r.conf >= best.conf) best = r; }
+    if (best.text){ status.textContent = "Photo read."; decide(best.text, best.conf); }
+    else { status.textContent = "No plate read. Retake closer, or type it in Manual test."; }
+    e.target.value = "";
+  };
+
+  // ---------- Init ----------
+  renderVehicles(); renderLog(); initOCR();
+})();
+</script>
+</body>
+</html>
